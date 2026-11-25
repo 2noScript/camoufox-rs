@@ -1,0 +1,15 @@
+[package]
+name = "camoufox-rs"
+version = "0.5.7"
+edition = "2021"
+license = "MIT"
+description = "Rust launcher SDK for the Camoufox anti-detect Firefox browser"
+repository = "https://github.com/2noScript/camoufox-rs"
+homepage = "https://camoufox.com"
+readme = "README.md"
+keywords = ["camoufox", "firefox", "fingerprint", "anti-detect", "playwright"]
+categories = ["web-programming", "api-bindings"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
