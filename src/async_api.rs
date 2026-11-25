@@ -185,10 +185,31 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
         } else {
             host_identity(&prepared, canvas_noise).await?
         };
-        let pw = Playwright::launch().await?;
-        let firefox = pw.firefox();
-
         if is_persistent {
+            static PERSISTENT_ENV_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+            let env_guard = PERSISTENT_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+
+            struct EnvRestore(Vec<(String, Option<std::ffi::OsString>)>);
+            impl Drop for EnvRestore {
+                fn drop(&mut self) {
+                    for (k, prev) in &self.0 {
+                        match prev {
+                            Some(v) => std::env::set_var(k, v),
+                            None => std::env::remove_var(k),
+                        }
+                    }
+                }
+            }
+
+            let mut saved = Vec::with_capacity(prepared.env.len());
+            for (k, v) in &prepared.env {
+                saved.push((k.clone(), std::env::var_os(k)));
+                std::env::set_var(k, v);
+            }
+            let _restore = EnvRestore(saved);
+
+            let pw = Playwright::launch().await?;
+            let firefox = pw.firefox();
             let dir_str = user_data_dir
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -214,11 +235,11 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
             if let Some(ref p) = prepared.proxy {
                 ctx_opts.proxy = Some(p.to_playwright());
             }
-            // Note: launch_persistent_context_with_options uses process env + firefox_user_prefs;
-            // CAMOU_CONFIG_* / CAMOU_PREFS_* can also be exported or set per launch.
             let ctx = firefox
                 .launch_persistent_context_with_options(dir_str, ctx_opts)
                 .await?;
+            drop(_restore);
+            drop(env_guard);
             return Ok::<_, CamoufoxError>(CamoufoxBrowser {
                 playwright: Some(pw),
                 browser: None,
@@ -232,6 +253,9 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
                 prepared_options: prepared.clone(),
             });
         }
+
+        let pw = Playwright::launch().await?;
+        let firefox = pw.firefox();
 
         let pw_opts = prepared.to_playwright_launch_options();
         let browser = firefox.launch_with_options(pw_opts).await?;

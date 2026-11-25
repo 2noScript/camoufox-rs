@@ -50,7 +50,12 @@ async fn main() -> camoufox_rs::Result<()> {
 use camoufox_rs::{camoufox, CamoufoxOptions, NewContextOptions};
 
 # async fn run() -> camoufox_rs::Result<()> {
-let mut browser = camoufox(CamoufoxOptions::default()).await?;
+let mut browser = camoufox(CamoufoxOptions {
+    canvas_noise: Some(true),
+    i_know_what_im_doing: true,
+    ..Default::default()
+})
+.await?;
 let ctx = browser
     .new_context(NewContextOptions {
         os: Some("windows".into()),
