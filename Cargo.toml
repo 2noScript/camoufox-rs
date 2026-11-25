@@ -10,6 +10,29 @@ readme = "README.md"
 keywords = ["camoufox", "firefox", "fingerprint", "anti-detect", "playwright"]
 categories = ["web-programming", "api-bindings"]
 
+[[bin]]
+name = "camoufox"
+path = "src/bin/camoufox.rs"
+
 [dependencies]
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+dirs = "6"
+fpgen-rs = { git = "https://github.com/2noScript/fpgen-rs" }
+hex = "0.4"
+indexmap = { version = "2", features = ["serde"] }
+maxminddb = "0.25"
+myuri-rs = { git = "https://github.com/2noScript/myuri-rs" }
+playwright-rs = "~0.16"
+quick-xml = "0.37"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+url = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
