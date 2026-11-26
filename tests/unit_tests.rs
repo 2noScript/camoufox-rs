@@ -245,6 +245,9 @@ fn repos_default_points_to_fork() {
     assert_eq!(def.primary_repo(), "2noScript/camoufox");
     assert_eq!(get_default_channel(), "un-camoufox/stable");
     assert!(RepoConfig::find_by_name("Official").is_some());
+    assert!(camoufox_rs::paths::install_dir()
+        .to_string_lossy()
+        .contains("uncamoufox"));
 }
 
 #[test]

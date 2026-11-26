@@ -132,7 +132,7 @@ pub fn user_cache_dir(app_name: &str) -> PathBuf {
 }
 
 pub fn install_dir() -> PathBuf {
-    user_cache_dir("camoufox")
+    user_cache_dir("uncamoufox")
 }
 
 pub fn configure_fpgen_model_dir() {
