@@ -50,6 +50,9 @@ pub mod warnings;
 pub mod webgl;
 
 pub use addons::{add_default_addons, confirm_paths, get_addon_path, DefaultAddons};
+pub use fpgen_rs;
+pub use myuri_rs;
+pub use playwright_rs;
 pub use async_api::{camoufox, new_browser, new_context, CamoufoxBrowser, Headless, NewContextOptions};
 pub use config::{
     chunk_env_vars, launch_env, validate_config, validate_type, LaunchOptions, TargetOs,
