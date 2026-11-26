@@ -1,9 +1,9 @@
-//! Interactive end-to-end web automation demo powered by `camoufox_rs` + `myuri_rs`.
+//! Production-clean web automation example powered by `camoufox_rs` + `myuri_rs`.
 //!
-//! Spins up a tiny local multi-page web app (`GET /`, `GET /dashboard`), launches
-//! headed Camoufox with humanized mouse/keyboard/scroll input, logs in, hovers
-//! tooltips, filters rows, scrolls down, approves an item, and keeps the window open
-//! for manual inspection (pass `--auto-close` to exit automatically).
+//! Launches headed Camoufox with zero DOM overlays or debug canvas trails, logs into
+//! a local multi-page web app, hovers tooltips, searches/filters items, scrolls smoothly
+//! with the virtual mouse, approves orders, and keeps the browser open until closed
+//! (pass `--auto-close` to exit automatically after completion).
 //!
 //! ```bash
 //! CAMOUFOX_EXECUTABLE_PATH=/path/to/camoufox cargo run --example web_automation_demo
@@ -24,11 +24,10 @@ const LOGIN_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Camoufox Rust Web Demo — Sign In</title>
+<title>Camoufox Portal — Sign In</title>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: #0b1120; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; display: grid; place-items: center; }
-  #trail { position: fixed; inset: 0; pointer-events: none; z-index: 9998; }
   .card { width: 420px; background: #111827; border: 1px solid #1f2937; border-radius: 14px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
   h1 { margin: 0 0 6px; font-size: 20px; }
   p.sub { margin: 0 0 20px; color: #94a3b8; font-size: 13px; }
@@ -43,15 +42,14 @@ const LOGIN_HTML: &str = r##"<!doctype html>
   .badge { position: relative; font-size: 12px; color: #38bdf8; border: 1px solid #1e3a8a; background: #0f172a; padding: 4px 10px; border-radius: 999px; cursor: help; }
   #tooltip { display: none; position: absolute; right: 0; bottom: 30px; width: 220px; padding: 8px 10px; border-radius: 8px; background: #1e293b; border: 1px solid #38bdf8; color: #e2e8f0; font-size: 12px; }
   .badge.open #tooltip { display: block; }
-  button { margin-top: 20px; width: 100%; padding: 11px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; font-weight: 600; font-size: 15px; cursor: pointer; }
+  button { margin-top: 20px; width: 100%; padding: 11px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; font-weight: 600; font-size: 15px; cursor: pointer; transition: background .15s; }
   button:hover { background: #1d4ed8; }
 </style>
 </head>
 <body>
-  <canvas id="trail"></canvas>
   <form id="login-form" class="card" method="GET" action="/dashboard">
     <h1>Camoufox Portal</h1>
-    <p class="sub">Sign in with Rust SDK humanized mouse &amp; keyboard</p>
+    <p class="sub">Sign in to workspace</p>
     <label for="email">Email</label>
     <input id="email" name="user" type="text" placeholder="you@example.com" required />
     <label for="password">Password</label>
@@ -64,30 +62,13 @@ const LOGIN_HTML: &str = r##"<!doctype html>
     </select>
     <div class="row">
       <label class="check"><input id="agree" type="checkbox" required /> Accept terms</label>
-      <div id="help-badge" class="badge">Hover info
-        <div id="tooltip">Camoufox C++ spoof + Myuri driver cursor active.</div>
+      <div id="help-badge" class="badge">Security Info
+        <div id="tooltip">Protected session active.</div>
       </div>
     </div>
     <button id="login-btn" type="submit">Sign In to Dashboard</button>
   </form>
   <script>
-    const canvas = document.getElementById('trail');
-    const ctx = canvas.getContext('2d');
-    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
-    resize();
-    window.addEventListener('resize', resize);
-    let last = null;
-    window.addEventListener('mousemove', (e) => {
-      if (last) {
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(last.x, last.y);
-        ctx.lineTo(e.clientX, e.clientY);
-        ctx.stroke();
-      }
-      last = { x: e.clientX, y: e.clientY };
-    }, true);
     document.getElementById('help-badge').addEventListener('mouseenter', (e) => e.currentTarget.classList.add('open'));
     document.getElementById('help-badge').addEventListener('mouseleave', (e) => e.currentTarget.classList.remove('open'));
     document.getElementById('login-form').addEventListener('submit', () => {
@@ -100,15 +81,15 @@ const LOGIN_HTML: &str = r##"<!doctype html>
 fn dashboard_html(query: &str) -> String {
     let mut rows = String::new();
     for i in 1..=25 {
-        let label = format!("Order #{i:03}");
-        let owner = if i % 2 == 0 { "Alice" } else { "Bob" };
+        let label = format!("Product #{i:03}");
+        let owner = if i % 2 == 0 { "In Stock" } else { "Limited" };
         rows.push_str(&format!(
             r#"<tr data-row="{i}" data-label="{label} {owner}">
               <td>#{i:03}</td>
               <td>{label}</td>
               <td>{owner}</td>
               <td><span id="status-{i}" class="pill pending">Pending</span></td>
-              <td><button id="approve-{i}" class="approve" onclick="approveRow({i})">Approve</button></td>
+              <td><button id="approve-{i}" class="approve" onclick="approveRow({i})">Add to Cart</button></td>
             </tr>"#
         ));
     }
@@ -117,11 +98,10 @@ fn dashboard_html(query: &str) -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Camoufox Dashboard</title>
+<title>Camoufox Store — Products</title>
 <style>
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; background: #0b1120; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; padding: 28px; }}
-  #trail {{ position: fixed; inset: 0; pointer-events: none; z-index: 9998; }}
   .wrap {{ max-width: 960px; margin: 0 auto; }}
   .grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0 24px; }}
   .stat {{ background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 14px; font-size: 13px; }}
@@ -132,50 +112,33 @@ fn dashboard_html(query: &str) -> String {
   table {{ width: 100%; border-collapse: collapse; background: #111827; border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; }}
   th, td {{ padding: 14px 16px; border-bottom: 1px solid #1f2937; text-align: left; font-size: 14px; }}
   th {{ background: #1e293b; color: #94a3b8; font-size: 12px; text-transform: uppercase; }}
+  tr:hover td {{ background: rgba(56, 189, 248, 0.06); }}
   .pill {{ padding: 4px 10px; border-radius: 999px; font-size: 12px; }}
-  .pending {{ background: #451a03; color: #fbbf24; }}
+  .pending {{ background: #1e293b; color: #94a3b8; }}
   .done {{ background: #052e16; color: #4ade80; }}
-  button.approve {{ padding: 6px 12px; border-radius: 6px; border: 0; background: #2563eb; color: #fff; cursor: pointer; }}
+  button.approve {{ padding: 6px 12px; border-radius: 6px; border: 0; background: #2563eb; color: #fff; cursor: pointer; transition: background .15s; }}
+  button.approve:hover {{ background: #1d4ed8; }}
   button.approve.done-btn {{ background: #16a34a; }}
 </style>
 </head>
 <body>
-  <canvas id="trail"></canvas>
   <div class="wrap">
-    <h1>Dashboard <small style="color:#64748b;font-size:13px">({query})</small></h1>
+    <h1>Product Catalog <small style="color:#64748b;font-size:13px">({query})</small></h1>
     <div class="grid">
       <div class="stat">Session Cookie<b id="fp-cookie"></b></div>
       <div class="stat">Platform / WebDriver<b id="fp-plat"></b></div>
       <div class="stat">WebGL Renderer<b id="fp-webgl"></b></div>
     </div>
     <div class="toolbar">
-      <input id="search" type="text" placeholder="Filter orders (e.g. Order #018)..." />
+      <input id="search" type="text" placeholder="Search products (e.g. Product #018)..." />
       <button id="reset-search" class="clear" onclick="clearSearch()">Show All</button>
     </div>
     <table>
-      <thead><tr><th>ID</th><th>Order</th><th>Owner</th><th>Status</th><th>Action</th></tr></thead>
+      <thead><tr><th>ID</th><th>Product</th><th>Availability</th><th>Cart</th><th>Action</th></tr></thead>
       <tbody id="rows">{rows}</tbody>
     </table>
   </div>
   <script>
-    const canvas = document.getElementById('trail');
-    const ctx = canvas.getContext('2d');
-    const resize = () => {{ canvas.width = window.innerWidth; canvas.height = window.innerHeight; }};
-    resize();
-    window.addEventListener('resize', resize);
-    let last = null;
-    window.addEventListener('mousemove', (e) => {{
-      if (last) {{
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(last.x, last.y);
-        ctx.lineTo(e.clientX, e.clientY);
-        ctx.stroke();
-      }}
-      last = {{ x: e.clientX, y: e.clientY }};
-    }}, true);
-
     const gl = document.createElement('canvas').getContext('webgl');
     const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
     document.getElementById('fp-cookie').textContent = document.cookie || 'none';
@@ -196,9 +159,9 @@ fn dashboard_html(query: &str) -> String {
     window.approveRow = (id) => {{
       const s = document.getElementById('status-' + id);
       const b = document.getElementById('approve-' + id);
-      s.textContent = 'Approved';
+      s.textContent = 'Added';
       s.className = 'pill done';
-      b.textContent = 'Approved';
+      b.textContent = 'Added';
       b.classList.add('done-btn');
     }};
   </script>
@@ -238,7 +201,7 @@ async fn start_demo_server() -> std::io::Result<String> {
 #[tokio::main]
 async fn main() -> camoufox_rs::Result<()> {
     let base_url = start_demo_server().await?;
-    println!("Demo web app listening at {base_url}");
+    println!("Web app listening at {base_url}");
 
     let mut browser = camoufox(CamoufoxOptions {
         os: vec!["macos".into()],
@@ -298,14 +261,14 @@ async fn main() -> camoufox_rs::Result<()> {
 
     page.wait_for_url("**/dashboard*", None).await?;
     page.locator("#rows tr").first().wait_for(None).await?;
-    println!("4) Logged in! On /dashboard, filtering for Order #018...");
+    println!("4) Logged in! Searching for Product #018 and adding to cart...");
 
     cursor
         .click(Some("#search"), None)
         .await
         .map_err(CamoufoxError::from)?;
-    hp.type_text("Order #018").await?;
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    hp.type_text("Product #018").await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     cursor
         .click(Some("#approve-18"), None)
@@ -316,7 +279,7 @@ async fn main() -> camoufox_rs::Result<()> {
         .await
         .map_err(CamoufoxError::from)?;
 
-    println!("5) Scrolling smoothly to #approve-24 and clicking it...");
+    println!("5) Scrolling naturally to Product #024 and adding to cart...");
     cursor
         .click(Some("#approve-24"), None)
         .await
@@ -334,13 +297,13 @@ async fn main() -> camoufox_rs::Result<()> {
             None,
         )
         .await?;
-    println!("Web automation finished: {summary}");
+    println!("Production-mode web automation finished: {summary}");
 
     let auto_close = std::env::args().any(|a| a == "--auto-close");
     if auto_close {
         tokio::time::sleep(Duration::from_millis(1000)).await;
     } else {
-        println!("Dashboard stays open for you to inspect/interact. Close the browser window or press Ctrl+C to exit.");
+        println!("Browser stays open for manual inspection. Close the window or press Ctrl+C to exit.");
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
