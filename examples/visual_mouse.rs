@@ -91,7 +91,9 @@ async fn main() -> camoufox_rs::Result<()> {
               ctx.beginPath();
               ctx.arc(e.clientX, e.clientY, 14, 0, Math.PI * 2);
               ctx.stroke();
-              if (e.target && e.target.classList) e.target.classList.add('hit');
+              if (e.target && e.target.classList && e.target.classList.contains('target')) {
+                e.target.classList.add('hit');
+              }
             }, true);
 
             window.addEventListener('scroll', () => {
