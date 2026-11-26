@@ -1532,6 +1532,7 @@ pub async fn launch_options(opts: CamoufoxOptions) -> Result<PreparedLaunchOptio
         firefox_user_prefs.insert("webgl.disabled".into(), Value::Bool(true));
         LeakWarning::warn("block_webgl", Some(opts.i_know_what_im_doing));
     } else {
+        let _ = ensure_fpgen_model(false).await?;
         let seed = Some(identity_seed(&config, salt) as i64);
         let mut wgl_fp = if let Some((ref vendor, ref renderer)) = opts.webgl_config {
             webgl_for_gpu(target_os, vendor, renderer, seed)?
