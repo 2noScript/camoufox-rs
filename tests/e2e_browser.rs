@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use camoufox_rs::addons::DefaultAddons;
 use camoufox_rs::humanize::HumanizeSetting;
 use camoufox_rs::humanize_playwright::HumanizedPage;
-use camoufox_rs::{camoufox, launch_server, CamoufoxOptions, HeadlessMode, NewContextOptions};
+use camoufox_rs::{
+    camoufox, launch_server, CamoufoxOptions, HeadlessMode, HeadlessStreamOptions, Modifiers,
+    MouseButton, NewContextOptions, StreamFormat,
+};
 
 /// End-to-end launch verification using a local Camoufox binary.
 /// Run with:
@@ -99,4 +102,78 @@ async fn e2e_launch_and_new_context_isolation() {
     .expect("launch_server");
     assert!(srv.ws_endpoint.starts_with("ws://"));
     srv.close().await.expect("close server");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "Requires local Camoufox binary with headless-stream patch"]
+async fn e2e_headless_stream_capture_and_input() {
+    let bin = std::env::var("CAMOUFOX_TEST_BIN")
+        .map(PathBuf::from)
+        .expect("CAMOUFOX_TEST_BIN must be set");
+
+    let mut browser = camoufox(CamoufoxOptions {
+        executable_path: Some(bin),
+        os: vec!["macos".into()],
+        headless: HeadlessMode::Bool(true),
+        headless_stream: Some(
+            HeadlessStreamOptions::new()
+                .with_fps(30)
+                .with_format(StreamFormat::Nv12),
+        ),
+        exclude_addons: vec![DefaultAddons::Ubo],
+        i_know_what_im_doing: true,
+        ..Default::default()
+    })
+    .await
+    .expect("launch Camoufox with headless_stream");
+
+    let sock = browser
+        .headless_stream_socket()
+        .expect("stream socket injected");
+    let mut stream = browser
+        .connect_stream()
+        .await
+        .expect("connect HeadlessStreamClient");
+
+    let page = browser.new_page().await.expect("new_page");
+    page.set_content(
+        "<input id='inp' style='position:fixed;inset:0;width:100vw;height:100vh' />",
+        None,
+    )
+    .await
+    .expect("set_content");
+
+    let frame = stream.next_frame().await.expect("receive NV12 frame");
+    assert!(frame.width >= 200 && frame.height >= 200);
+    assert_eq!(frame.format, StreamFormat::Nv12);
+    assert_eq!(frame.to_rgba().unwrap().len(), (frame.width * frame.height * 4) as usize);
+
+    stream
+        .click(200, 200, MouseButton::Left, Modifiers::NONE)
+        .await
+        .expect("send click");
+    stream
+        .type_text("rs-ok", Modifiers::NONE)
+        .await
+        .expect("send text");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let val: String = page
+            .evaluate::<(), String>("() => document.getElementById('inp').value", None)
+            .await
+            .unwrap_or_default();
+        if val == "rs-ok" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "typed value did not reach page, got {val:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    browser.close().await.expect("close browser");
+    assert!(!sock.exists(), "auto stream socket should be cleaned up on close");
 }

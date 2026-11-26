@@ -30,6 +30,7 @@ use crate::fingerprints::{
 use crate::fpgen_model::ensure_fpgen_model;
 use crate::geolocation::{geoip_allowed, get_geolocation};
 use crate::gpudisplay::{gpu_prefs, select_gpu, GpuDisplay};
+use crate::headless_stream::{apply_headless_stream_env, HeadlessStreamOptions};
 use crate::host_rendering::{
     add_canvas_placeholder, has_canvas_placeholder, host_gpu, set_webgpu, Gpu,
 };
@@ -150,6 +151,7 @@ pub struct CamoufoxOptions {
     pub slow_mo_ms: Option<f64>,
     pub ignore_https_errors: Option<bool>,
     pub downloads_path: Option<PathBuf>,
+    pub headless_stream: Option<HeadlessStreamOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1007,6 +1009,15 @@ pub async fn launch_options(opts: CamoufoxOptions) -> Result<PreparedLaunchOptio
         if let Ok(abs) = fs::canonicalize(p) {
             executable_path = Some(abs);
         }
+    }
+
+    if let Some(ref stream_opts) = opts.headless_stream {
+        apply_headless_stream_env(
+            stream_opts,
+            headless_bool,
+            opts.virtual_display.as_deref(),
+            &mut env,
+        )?;
     }
 
     if let Some(ref vd) = opts.virtual_display {

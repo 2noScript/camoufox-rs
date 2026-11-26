@@ -1,5 +1,6 @@
 //! Synchronous blocking wrappers over `async_api`, matching `sync_api.ts` / `sync_api.py`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::runtime::{Builder, Runtime};
@@ -9,6 +10,7 @@ use crate::async_api::{
     NewContextOptions,
 };
 use crate::exceptions::{CamoufoxError, Result};
+use crate::headless_stream::HeadlessStreamClient;
 use crate::utils::CamoufoxOptions;
 
 /// Blocking handle to a launched Camoufox browser backed by a dedicated Tokio runtime.
@@ -48,6 +50,20 @@ impl SyncCamoufox {
             .as_ref()
             .ok_or_else(|| CamoufoxError::ValueError("Camoufox already closed".into()))?;
         self.runtime.block_on(browser.new_page())
+    }
+
+    pub fn headless_stream_socket(&self) -> Option<PathBuf> {
+        self.inner
+            .as_ref()
+            .and_then(CamoufoxBrowser::headless_stream_socket)
+    }
+
+    pub fn connect_stream(&self) -> Result<HeadlessStreamClient> {
+        let browser = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| CamoufoxError::ValueError("Camoufox already closed".into()))?;
+        self.runtime.block_on(browser.connect_stream())
     }
 
     pub fn close(&mut self) -> Result<()> {

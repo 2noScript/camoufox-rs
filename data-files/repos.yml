@@ -1,10 +1,20 @@
 # Default configurations
 default:
-  browser: Official
+  browser: 2noScript
   geoip: GeoIP AIO by daijro
 
 # Browser repositories
 browsers:
+  # Fork builds with headless live stream support
+  - repo: 2noScript/camoufox
+    name: 2noScript
+    pattern: "{name}-{version}-{build}-{os}.{arch}.zip"
+    versions:
+      - python_library:
+          min: "0.5.0"
+          max: "1"
+
+  # Fallback to camoufox org
   # Fallback to camoufox org
   - repo: daijro/camoufox, camoufox/camoufox
     name: Official

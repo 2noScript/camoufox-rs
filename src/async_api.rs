@@ -2,7 +2,9 @@
 //! matching `async_api.ts` / `async_api.py` and `sync_api.ts`.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use playwright_rs::protocol::{
     Browser, BrowserContext, BrowserContextOptions, Geolocation as PwGeolocation, Page, Viewport,
@@ -16,6 +18,7 @@ use crate::cpu_affinity;
 use crate::exceptions::{CamoufoxError, Result};
 use crate::fingerprints::{generate_context_fingerprint, ContextFingerprint};
 use crate::fpgen_model::ensure_fpgen_model;
+use crate::headless_stream::{HeadlessStreamClient, CAMOU_STREAM_SOCKET_ENV};
 use crate::host_rendering::Gpu;
 use crate::humanize::{normalize as normalize_humanize, HumanizeSetting};
 use crate::ip::{proxy_auth_init_script, proxy_exit_geo, socks5_auth, ProxyConfig, ProxyHelper};
@@ -62,6 +65,7 @@ pub struct CamoufoxBrowser {
     pub humanize: Option<HumanizeSetting>,
     pub i_know_what_im_doing: bool,
     pub prepared_options: PreparedLaunchOptions,
+    owns_stream_socket: bool,
 }
 
 impl CamoufoxBrowser {
@@ -111,6 +115,31 @@ impl CamoufoxBrowser {
         Ok(ctx.new_page().await?)
     }
 
+    /// Returns the configured `AF_UNIX` path for `HeadlessStreamServer`, if enabled.
+    pub fn headless_stream_socket(&self) -> Option<PathBuf> {
+        self.prepared_options
+            .env_value(CAMOU_STREAM_SOCKET_ENV)
+            .map(PathBuf::from)
+    }
+
+    /// Connects to the browser's `HeadlessStreamServer` (`CAMF` video + `CAMI` input), waiting up to 10s.
+    pub async fn connect_stream(&self) -> Result<HeadlessStreamClient> {
+        self.connect_stream_with_timeout(Duration::from_secs(10)).await
+    }
+
+    /// Connects to the browser's `HeadlessStreamServer` with a custom bind wait timeout.
+    pub async fn connect_stream_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<HeadlessStreamClient> {
+        let sock = self.headless_stream_socket().ok_or_else(|| {
+            CamoufoxError::ValueError(
+                "headless_stream is not enabled on this browser (set CamoufoxOptions::headless_stream)".into(),
+            )
+        })?;
+        HeadlessStreamClient::connect_with_retry(&sock, timeout).await
+    }
+
     /// Creates a humanized cursor driven by `myuri-rs` on `page`.
     pub async fn cursor(&self, page: &Page) -> Result<myuri_rs::Cursor> {
         crate::humanize_playwright::cursor_for_page(
@@ -135,7 +164,17 @@ impl CamoufoxBrowser {
         if let Some(pw) = self.playwright.take() {
             let _ = pw.shutdown().await;
         }
+        self.cleanup_stream_socket();
         Ok(())
+    }
+
+    fn cleanup_stream_socket(&mut self) {
+        if self.owns_stream_socket {
+            self.owns_stream_socket = false;
+            if let Some(sock) = self.headless_stream_socket() {
+                let _ = std::fs::remove_file(sock);
+            }
+        }
     }
 }
 
@@ -146,6 +185,7 @@ impl Drop for CamoufoxBrowser {
                 disp.kill();
             }
         }
+        self.cleanup_stream_socket();
     }
 }
 
@@ -169,6 +209,10 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
     let is_persistent = options.persistent_context || options.user_data_dir.is_some();
     let user_data_dir = options.user_data_dir.clone();
     let no_viewport_opt = options.no_viewport;
+    let owns_stream_socket = options
+        .headless_stream
+        .as_ref()
+        .is_some_and(|s| s.socket_path.is_none());
 
     let prepared = match launch_options(options).await {
         Ok(p) => p,
@@ -258,6 +302,7 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
                 humanize: humanize_opt.clone(),
                 i_know_what_im_doing: i_know,
                 prepared_options: prepared.clone(),
+                owns_stream_socket,
             });
         }
 
@@ -277,6 +322,7 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
             humanize: humanize_opt.clone(),
             i_know_what_im_doing: i_know,
             prepared_options: prepared.clone(),
+            owns_stream_socket,
         })
     };
 

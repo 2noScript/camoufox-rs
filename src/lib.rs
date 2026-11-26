@@ -32,6 +32,7 @@ pub mod fingerprints;
 pub mod fpgen_model;
 pub mod geolocation;
 pub mod gpudisplay;
+pub mod headless_stream;
 pub mod host_rendering;
 pub mod humanize;
 pub mod humanize_playwright;
@@ -59,6 +60,10 @@ pub use config::{
 };
 pub use exceptions::{CamoufoxError, Result};
 pub use fingerprints::{generate_context_fingerprint, generate_fingerprint, Screen};
+pub use headless_stream::{
+    HeadlessStreamClient, HeadlessStreamOptions, HeadlessStreamReader, HeadlessStreamWriter,
+    Modifiers, MouseButton, StreamFormat, StreamFrame, StreamInputEvent, StreamInputType,
+};
 pub use fpgen_model::{ensure_fpgen_model, is_model_installed};
 pub use humanize::{cursory, driven_channels, myuri, normalize as normalize_humanize, raw, Channel, Engine, HumanizeConfig, HumanizeSetting};
 pub use humanize_playwright::{cursor_for_page, HumanizedPage};

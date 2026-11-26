@@ -234,3 +234,151 @@ trait UboCheck {
     }
 }
 impl UboCheck for DefaultAddons {}
+
+#[test]
+fn repos_default_points_to_fork() {
+    use camoufox_rs::multiversion::get_default_channel;
+    use camoufox_rs::pkgman::RepoConfig;
+
+    let def = RepoConfig::get_default();
+    assert_eq!(def.name, "2noScript");
+    assert_eq!(def.primary_repo(), "2noScript/camoufox");
+    assert_eq!(get_default_channel(), "2noscript/stable");
+    assert!(RepoConfig::find_by_name("Official").is_some());
+}
+
+#[test]
+fn headless_stream_wire_and_env_roundtrip() {
+    use camoufox_rs::headless_stream::{
+        apply_headless_stream_env, CAMF_HEADER_SIZE, CAMF_MAGIC, CAMI_HEADER_SIZE, CAMI_MAGIC,
+        CAMOU_STREAM_FORMAT_ENV, CAMOU_STREAM_FPS_ENV, CAMOU_STREAM_SOCKET_ENV,
+        STREAM_PROTOCOL_VERSION,
+    };
+    use camoufox_rs::{
+        HeadlessStreamOptions, Modifiers, MouseButton, StreamFormat, StreamFrame, StreamInputEvent,
+    };
+
+    // Valid CAMF BGRA & NV12 header decoding + RGBA conversion
+    let mut bgra_hdr = [0u8; CAMF_HEADER_SIZE];
+    bgra_hdr[0..4].copy_from_slice(&CAMF_MAGIC.to_le_bytes());
+    bgra_hdr[4..8].copy_from_slice(&STREAM_PROTOCOL_VERSION.to_le_bytes());
+    bgra_hdr[8..12].copy_from_slice(&2u32.to_le_bytes());
+    bgra_hdr[12..16].copy_from_slice(&2u32.to_le_bytes());
+    bgra_hdr[16..20].copy_from_slice(&(StreamFormat::Bgra as u32).to_le_bytes());
+    bgra_hdr[20..24].copy_from_slice(&16u32.to_le_bytes());
+    bgra_hdr[24..32].copy_from_slice(&123456u64.to_le_bytes());
+    let parsed = StreamFrame::decode_header(&bgra_hdr).unwrap();
+    assert_eq!(parsed, (2, 2, StreamFormat::Bgra, 16, 123456));
+
+    let bgra_frame = StreamFrame {
+        width: 2,
+        height: 2,
+        format: StreamFormat::Bgra,
+        pts_us: 1,
+        data: [10, 20, 30, 255].repeat(4),
+    };
+    let rgba = bgra_frame.to_rgba().unwrap();
+    assert_eq!(&rgba[..4], &[30, 20, 10, 255]);
+
+    // NV12 to RGBA dimensions & bounds
+    let nv12_frame = StreamFrame {
+        width: 2,
+        height: 2,
+        format: StreamFormat::Nv12,
+        pts_us: 2,
+        data: vec![16, 16, 16, 16, 128, 128],
+    };
+    let nv12_rgba = nv12_frame.to_rgba().unwrap();
+    assert_eq!(nv12_rgba.len(), 16);
+
+    // CAMI reverse input encoding
+    let pkt = StreamInputEvent::key_down(
+        "Enter",
+        "Enter",
+        true,
+        0,
+        13,
+        Modifiers::from_bits(Modifiers::CONTROL),
+    )
+    .encode()
+    .unwrap();
+    assert_eq!(u32::from_le_bytes(pkt[0..4].try_into().unwrap()), CAMI_MAGIC);
+    assert_eq!(u32::from_le_bytes(pkt[8..12].try_into().unwrap()), 5);
+    assert_eq!(u32::from_le_bytes(pkt[12..16].try_into().unwrap()), Modifiers::CONTROL);
+    assert_eq!(i32::from_le_bytes(pkt[16..20].try_into().unwrap()), 1);
+    assert_eq!(i32::from_le_bytes(pkt[28..32].try_into().unwrap()), 13);
+    assert_eq!(std::str::from_utf8(&pkt[CAMI_HEADER_SIZE..]).unwrap(), "Enter\tEnter");
+
+    let click_pkt = StreamInputEvent::mouse_down(12, 34, MouseButton::Right, Modifiers::NONE)
+        .encode()
+        .unwrap();
+    assert_eq!(click_pkt.len(), CAMI_HEADER_SIZE);
+    assert_eq!(i32::from_le_bytes(click_pkt[24..28].try_into().unwrap()), 2);
+
+    // Env injection & bounds validation
+    let mut env = BTreeMap::new();
+    let opts = HeadlessStreamOptions::new()
+        .with_fps(45)
+        .with_format(StreamFormat::Bgra);
+    #[cfg(unix)]
+    {
+        apply_headless_stream_env(&opts, true, None, &mut env).unwrap();
+        assert!(env.contains_key(CAMOU_STREAM_SOCKET_ENV));
+        assert_eq!(env.get(CAMOU_STREAM_FPS_ENV).map(String::as_str), Some("45"));
+        assert_eq!(env.get(CAMOU_STREAM_FORMAT_ENV).map(String::as_str), Some("bgra"));
+        let _ = std::fs::remove_file(&env[CAMOU_STREAM_SOCKET_ENV]);
+
+        let bad_fps = HeadlessStreamOptions::new().with_fps(0);
+        assert!(apply_headless_stream_env(&bad_fps, true, None, &mut BTreeMap::new()).is_err());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn headless_stream_unix_socket_roundtrip() {
+    use camoufox_rs::headless_stream::{
+        CAMF_HEADER_SIZE, CAMF_MAGIC, CAMI_HEADER_SIZE, CAMI_MAGIC, STREAM_PROTOCOL_VERSION,
+    };
+    use camoufox_rs::{HeadlessStreamClient, Modifiers, MouseButton, StreamFormat};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
+
+    let sock_path = std::env::temp_dir().join(format!("camou-test-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock_path);
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut srv, _) = listener.accept().await.unwrap();
+        let payload = vec![235u8; 4 * 2 + 4];
+        let mut hdr = Vec::with_capacity(CAMF_HEADER_SIZE);
+        hdr.extend_from_slice(&CAMF_MAGIC.to_le_bytes());
+        hdr.extend_from_slice(&STREAM_PROTOCOL_VERSION.to_le_bytes());
+        hdr.extend_from_slice(&4u32.to_le_bytes());
+        hdr.extend_from_slice(&2u32.to_le_bytes());
+        hdr.extend_from_slice(&(StreamFormat::Nv12 as u32).to_le_bytes());
+        hdr.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        hdr.extend_from_slice(&999u64.to_le_bytes());
+        srv.write_all(&hdr).await.unwrap();
+        srv.write_all(&payload).await.unwrap();
+        srv.flush().await.unwrap();
+
+        let mut in_hdr = [0u8; CAMI_HEADER_SIZE];
+        srv.read_exact(&mut in_hdr).await.unwrap();
+        assert_eq!(u32::from_le_bytes(in_hdr[0..4].try_into().unwrap()), CAMI_MAGIC);
+        let text_len = u32::from_le_bytes(in_hdr[32..36].try_into().unwrap()) as usize;
+        let mut body = vec![0u8; text_len];
+        srv.read_exact(&mut body).await.unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "ok");
+    });
+
+    let mut client = HeadlessStreamClient::connect_with_retry(&sock_path, std::time::Duration::from_secs(2))
+        .await
+        .unwrap();
+    let frame = client.next_frame().await.unwrap();
+    assert_eq!((frame.width, frame.height, frame.pts_us), (4, 2, 999));
+    client.type_text("ok", Modifiers::NONE).await.unwrap();
+
+    let _ = MouseButton::Left;
+    server.await.unwrap();
+    let _ = std::fs::remove_file(&sock_path);
+}

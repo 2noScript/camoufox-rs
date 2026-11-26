@@ -259,6 +259,45 @@ async fn main() -> camoufox_rs::Result<()> {
 }
 ```
 
+## Headless Live Stream (`CAMF` Video + `CAMI` Input)
+
+When running builds from `2noScript/camoufox` (the default `2noScript` repo in [`data-files/repos.yml`](data-files/repos.yml)) on Linux or macOS, enable `headless_stream` on `CamoufoxOptions` to receive composited `NV12`/`BGRA` frames over `AF_UNIX` and send native mouse, wheel, and keyboard events back without a virtual display:
+
+```rust
+use camoufox_rs::{
+    camoufox, CamoufoxOptions, HeadlessMode, HeadlessStreamOptions, Modifiers, MouseButton,
+    StreamFormat,
+};
+
+#[tokio::main]
+async fn main() -> camoufox_rs::Result<()> {
+    let mut browser = camoufox(CamoufoxOptions {
+        os: vec!["macos".into()],
+        headless: HeadlessMode::Bool(true),
+        headless_stream: Some(
+            HeadlessStreamOptions::new()
+                .with_fps(60)
+                .with_format(StreamFormat::Nv12),
+        ),
+        ..Default::default()
+    })
+    .await?;
+
+    let mut stream = browser.connect_stream().await?;
+    let page = browser.new_page().await?;
+    page.goto("https://example.com", None).await?;
+
+    let frame = stream.next_frame().await?;
+    println!("Got {}x{} frame ({} bytes)", frame.width, frame.height, frame.data.len());
+    stream.click(100, 100, MouseButton::Left, Modifiers::NONE).await?;
+
+    browser.close().await?;
+    Ok(())
+}
+```
+
+See [`examples/headless_stream.rs`](examples/headless_stream.rs) for a runnable demo.
+
 ## Persistent Context & Remote Server
 
 - **Persistent profile**: set `persistent_context: true` and `user_data_dir: Some(path)` on `CamoufoxOptions`.
