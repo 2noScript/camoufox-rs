@@ -144,7 +144,23 @@ async fn main() -> camoufox_rs::Result<()> {
         .await?;
     println!("camoufox-rs visual mouse demo finished: {hud}");
 
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let auto_close = std::env::args().any(|a| a == "--auto-close");
+    if auto_close {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    } else {
+        println!("Browser stays open for manual interaction. Close the Camoufox window or press Ctrl+C to exit.");
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                    let connected = browser.browser().map(|b| b.is_connected()).unwrap_or(false);
+                    if !connected {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     browser.close().await?;
     Ok(())
 }
