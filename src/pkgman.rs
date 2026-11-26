@@ -464,16 +464,19 @@ impl AvailableVersion {
     }
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .user_agent(format!("camoufox-rs/{}", crate::version::VERSION))
-        .build()
+fn http_client(total_timeout: Option<Duration>) -> Result<reqwest::Client> {
+    let mut b = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(60))
+        .user_agent(format!("camoufox-rs/{}", crate::version::VERSION));
+    if let Some(t) = total_timeout {
+        b = b.timeout(t);
+    }
+    b.build()
         .map_err(|e| CamoufoxError::ValueError(e.to_string()))
 }
 
-async fn github_get(url: &str) -> Result<reqwest::Response> {
-    let client = http_client()?;
+async fn github_get_with(url: &str, client: &reqwest::Client) -> Result<reqwest::Response> {
     let delays = [Duration::from_secs(1), Duration::from_secs(2)];
     for attempt in 0..=delays.len() {
         let mut req = client.get(url);
@@ -507,6 +510,11 @@ async fn github_get(url: &str) -> Result<reqwest::Response> {
         }
     }
     unreachable!()
+}
+
+async fn github_get(url: &str) -> Result<reqwest::Response> {
+    let client = http_client(Some(Duration::from_secs(60)))?;
+    github_get_with(url, &client).await
 }
 
 async fn github_releases(repo: &str) -> Result<Vec<GitHubRelease>> {
@@ -1037,16 +1045,33 @@ pub fn selected_launch_path(specifier: &str) -> Result<PathBuf> {
     launch_path(Some(&install_path))
 }
 
-pub async fn webdl(url: &str, desc: Option<&str>, _bar: bool) -> Result<Vec<u8>> {
+pub async fn webdl(url: &str, desc: Option<&str>, bar: bool) -> Result<Vec<u8>> {
     if let Some(d) = desc {
         println!("{d}: {url}");
     }
-    let resp = github_get(url).await?;
-    let bytes = resp
-        .bytes()
+    let client = http_client(None)?;
+    let mut resp = github_get_with(url, &client).await?;
+    let total = resp.content_length();
+    let mut buf = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut next_log = 15 * 1024 * 1024usize;
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| CamoufoxError::ValueError(e.to_string()))?;
-    Ok(bytes.to_vec())
+        .map_err(|e| CamoufoxError::ValueError(e.to_string()))?
+    {
+        buf.extend_from_slice(&chunk);
+        if bar && buf.len() >= next_log {
+            if let Some(tot) = total {
+                println!(
+                    "  {:.1} MB / {:.1} MB",
+                    buf.len() as f64 / (1024.0 * 1024.0),
+                    tot as f64 / (1024.0 * 1024.0)
+                );
+            }
+            next_log = buf.len() + 15 * 1024 * 1024;
+        }
+    }
+    Ok(buf)
 }
 
 pub fn verify_sha256(bytes: &[u8], expected: Option<&str>, desc: &str) -> Result<()> {
@@ -1081,6 +1106,18 @@ pub fn unzip(zip_path: &Path, extract_path: &Path) -> Result<()> {
         let out_path = extract_path.join(rel);
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
+        } else if entry.is_symlink() {
+            #[cfg(unix)]
+            {
+                use std::io::Read as _;
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut target = String::new();
+                entry.read_to_string(&mut target)?;
+                let _ = fs::remove_file(&out_path);
+                std::os::unix::fs::symlink(target, &out_path)?;
+            }
         } else {
             if let Some(parent) = out_path.parent() {
                 fs::create_dir_all(parent)?;
