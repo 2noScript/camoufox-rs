@@ -1,13 +1,13 @@
 # Default configurations
 default:
-  browser: 2noScript
+  browser: un-camoufox
   geoip: GeoIP AIO by daijro
 
 # Browser repositories
 browsers:
-  # Fork builds with headless live stream support
+  # Custom un-camoufox fork builds with headless live stream support
   - repo: 2noScript/camoufox
-    name: 2noScript
+    name: un-camoufox
     pattern: "{name}-{version}-{build}-{os}.{arch}.zip"
     versions:
       - python_library:

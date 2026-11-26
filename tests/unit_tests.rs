@@ -241,9 +241,9 @@ fn repos_default_points_to_fork() {
     use camoufox_rs::pkgman::RepoConfig;
 
     let def = RepoConfig::get_default();
-    assert_eq!(def.name, "2noScript");
+    assert_eq!(def.name, "un-camoufox");
     assert_eq!(def.primary_repo(), "2noScript/camoufox");
-    assert_eq!(get_default_channel(), "2noscript/stable");
+    assert_eq!(get_default_channel(), "un-camoufox/stable");
     assert!(RepoConfig::find_by_name("Official").is_some());
 }
 
