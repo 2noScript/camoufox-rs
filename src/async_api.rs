@@ -95,12 +95,19 @@ impl CamoufoxBrowser {
         .await
     }
 
-    /// Creates a new page with `Camoufox`'s no-viewport and SOCKS5 defaults applied.
+    /// Creates a new page using the browser's launch identity (`CAMOU_CONFIG`),
+    /// applying `no_viewport` when window dimensions are spoofed.
+    /// For a fresh per-context identity, use [`Self::new_context`].
     pub async fn new_page(&self) -> Result<Page> {
         if let Some(ref ctx) = self.persistent_context {
             return Ok(ctx.new_page().await?);
         }
-        let ctx = self.new_context(NewContextOptions::default()).await?;
+        let browser = self.browser()?;
+        let mut ctx_opts = BrowserContextOptions::default();
+        if self.no_viewport_default {
+            ctx_opts.no_viewport = Some(true);
+        }
+        let ctx = browser.new_context_with_options(ctx_opts).await?;
         Ok(ctx.new_page().await?)
     }
 
