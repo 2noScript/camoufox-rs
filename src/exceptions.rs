@@ -18,6 +18,9 @@ pub enum CamoufoxError {
     CorruptedDownload(String),
 
     #[error("{0}")]
+    DownloadCancelled(String),
+
+    #[error("{0}")]
     UnsupportedArchitecture(String),
 
     #[error("{0}")]

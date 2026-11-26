@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::browser_pin::{effective_pin, pin_matches, pin_spec, warn_if_unpaired};
 use crate::exceptions::{CamoufoxError, Result};
 use crate::multiversion::{
-    compat_flag, find_installed_version, get_active_path, get_default_channel, install_versioned,
-    load_config, load_repo_cache,
+    compat_flag, find_installed_version, get_active_path, get_default_channel, load_config,
+    load_repo_cache,
 };
 use crate::paths::{
     install_dir, launch_file_for, load_data_value, map_arch_name, map_os_name,
@@ -518,7 +518,7 @@ async fn github_get(url: &str) -> Result<reqwest::Response> {
 }
 
 async fn github_releases(repo: &str) -> Result<Vec<GitHubRelease>> {
-    let api_url = format!("https://api.github.com/repos/{repo}/releases");
+    let api_url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
     let resp = github_get(&api_url).await?;
     resp.json::<Vec<GitHubRelease>>()
         .await
@@ -655,7 +655,21 @@ impl CamoufoxFetcher {
     }
 
     pub async fn install(&mut self, replace: bool) -> Result<bool> {
-        let installed = install_versioned(self, replace).await?;
+        self.install_with_progress(replace, None, |_| {}).await
+    }
+
+    pub async fn install_with_progress<F>(
+        &mut self,
+        replace: bool,
+        cancel_flag: Option<&AtomicBool>,
+        on_progress: F,
+    ) -> Result<bool>
+    where
+        F: FnMut(crate::multiversion::InstallProgress) + Send,
+    {
+        let installed =
+            crate::multiversion::install_versioned_with_progress(self, replace, cancel_flag, on_progress)
+                .await?;
         let _ = ensure_browser_profile_dir(None);
         Ok(installed)
     }
@@ -1045,6 +1059,97 @@ pub fn selected_launch_path(specifier: &str) -> Result<PathBuf> {
     launch_path(Some(&install_path))
 }
 
+/// Progress snapshot reported by [`webdl_to_file`].
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percentage: f64,
+    pub speed_bytes_per_sec: f64,
+    pub eta_seconds: Option<u64>,
+}
+
+/// Streams `url` directly to `dest` with throttling progress callbacks, optional cancellation,
+/// and incremental SHA-256 hashing (returns lowercase hex digest).
+pub async fn webdl_to_file<F>(
+    url: &str,
+    dest: &Path,
+    cancel_flag: Option<&AtomicBool>,
+    mut on_progress: F,
+) -> Result<String>
+where
+    F: FnMut(DownloadProgress) + Send,
+{
+    use std::io::Write as _;
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let client = http_client(None)?;
+    let mut resp = github_get_with(url, &client).await?;
+    let total = resp.content_length();
+    let file = fs::File::create(dest)?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut hasher = Sha256::new();
+    let mut received: u64 = 0;
+    let start = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now();
+
+    on_progress(DownloadProgress {
+        downloaded_bytes: 0,
+        total_bytes: total,
+        percentage: 0.0,
+        speed_bytes_per_sec: 0.0,
+        eta_seconds: None,
+    });
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| CamoufoxError::ValueError(e.to_string()))?
+    {
+        if cancel_flag.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)) {
+            drop(writer);
+            let _ = fs::remove_file(dest);
+            return Err(CamoufoxError::DownloadCancelled("Download cancelled".into()));
+        }
+        writer.write_all(&chunk)?;
+        hasher.update(&chunk);
+        received += chunk.len() as u64;
+
+        if last_emit.elapsed() >= Duration::from_millis(200) {
+            let secs = start.elapsed().as_secs_f64().max(0.01);
+            let speed = received as f64 / secs;
+            let pct = total
+                .filter(|t| *t > 0)
+                .map(|t| (received as f64 / t as f64) * 100.0)
+                .unwrap_or(0.0);
+            let eta = total
+                .filter(|t| *t > received && speed > 1.0)
+                .map(|t| ((t - received) as f64 / speed) as u64);
+            on_progress(DownloadProgress {
+                downloaded_bytes: received,
+                total_bytes: total,
+                percentage: pct,
+                speed_bytes_per_sec: speed,
+                eta_seconds: eta,
+            });
+            last_emit = std::time::Instant::now();
+        }
+    }
+
+    writer.flush()?;
+    let secs = start.elapsed().as_secs_f64().max(0.01);
+    on_progress(DownloadProgress {
+        downloaded_bytes: received,
+        total_bytes: total.or(Some(received)),
+        percentage: 100.0,
+        speed_bytes_per_sec: received as f64 / secs,
+        eta_seconds: Some(0),
+    });
+    Ok(hex::encode(hasher.finalize()))
+}
+
 pub async fn webdl(url: &str, desc: Option<&str>, bar: bool) -> Result<Vec<u8>> {
     if let Some(d) = desc {
         println!("{d}: {url}");
@@ -1074,22 +1179,27 @@ pub async fn webdl(url: &str, desc: Option<&str>, bar: bool) -> Result<Vec<u8>> 
     Ok(buf)
 }
 
-pub fn verify_sha256(bytes: &[u8], expected: Option<&str>, desc: &str) -> Result<()> {
+pub fn verify_sha256_hex(actual_hex: &str, expected: Option<&str>, desc: &str) -> Result<()> {
     let Some(expected) = expected.filter(|s| !s.is_empty()) else {
         println!("Warning: no sha256 published for {desc}; skipping verification.");
         return Ok(());
     };
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let actual = hex::encode(hasher.finalize());
-    if actual != expected.to_ascii_lowercase() {
+    let expected_lower = expected.to_ascii_lowercase();
+    let actual_lower = actual_hex.to_ascii_lowercase();
+    if actual_lower != expected_lower {
         return Err(CamoufoxError::CorruptedDownload(format!(
-            "Checksum mismatch for {desc}.\n  expected sha256: {}\n  actual   sha256: {actual}\n\
-             The download was corrupted or tampered with. Installation aborted.",
-            expected.to_ascii_lowercase()
+            "Checksum mismatch for {desc}.\n  expected sha256: {expected_lower}\n  actual   sha256: {actual_lower}\n\
+             The download was corrupted or tampered with. Installation aborted."
         )));
     }
     Ok(())
+}
+
+pub fn verify_sha256(bytes: &[u8], expected: Option<&str>, desc: &str) -> Result<()> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let actual = hex::encode(hasher.finalize());
+    verify_sha256_hex(&actual, expected, desc)
 }
 
 pub fn unzip(zip_path: &Path, extract_path: &Path) -> Result<()> {

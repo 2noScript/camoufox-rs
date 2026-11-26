@@ -385,3 +385,36 @@ async fn headless_stream_unix_socket_roundtrip() {
     server.await.unwrap();
     let _ = std::fs::remove_file(&sock_path);
 }
+
+#[test]
+fn pkgman_sha256_and_zip_extraction() {
+    use camoufox_rs::pkgman::{unzip, verify_sha256, verify_sha256_hex};
+    use std::io::Write as _;
+
+    let payload = b"camoufox-archive-bytes";
+    assert!(verify_sha256(payload, None, "test").is_ok());
+    assert!(verify_sha256_hex(&"0".repeat(64), Some(&"0".repeat(64)), "test").is_ok());
+    let err = verify_sha256_hex(&"0".repeat(64), Some(&"f".repeat(64)), "test").unwrap_err();
+    assert!(matches!(err, CamoufoxError::CorruptedDownload(_)));
+
+    let tmp_dir = std::env::temp_dir().join(format!("camou-zip-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let zip_path = tmp_dir.join("bundle.zip");
+    let extract_dir = tmp_dir.join("out");
+
+    {
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+        zip.start_file("Camoufox.app/Contents/MacOS/camoufox", opts)
+            .unwrap();
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+    }
+
+    unzip(&zip_path, &extract_dir).unwrap();
+    let extracted = extract_dir.join("Camoufox.app/Contents/MacOS/camoufox");
+    assert_eq!(std::fs::read(&extracted).unwrap(), payload);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}

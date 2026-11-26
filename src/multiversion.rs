@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -11,8 +12,8 @@ use crate::browser_pin::{effective_pin, pin_matches};
 use crate::exceptions::Result;
 use crate::paths::{install_dir, load_data_value, OS_NAME};
 use crate::pkgman::{
-    format_asset_date, make_executable, unzip, verify_sha256, AvailableVersion, CamoufoxFetcher,
-    Version,
+    format_asset_date, make_executable, unzip, verify_sha256_hex, webdl_to_file,
+    AvailableVersion, CamoufoxFetcher, Version,
 };
 use crate::pycompat::compare_py_str;
 
@@ -367,7 +368,50 @@ pub fn find_installed_version(specifier: &str) -> Option<PathBuf> {
     None
 }
 
+/// Stage emitted during [`install_versioned_with_progress`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallStage {
+    Downloading,
+    Verifying,
+    Extracting,
+    Completed,
+}
+
+impl InstallStage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Downloading => "downloading",
+            Self::Verifying => "verifying",
+            Self::Extracting => "extracting",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+/// Progress update emitted during [`install_versioned_with_progress`].
+#[derive(Debug, Clone)]
+pub struct InstallProgress {
+    pub stage: InstallStage,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percentage: f64,
+    pub speed_bytes_per_sec: f64,
+    pub eta_seconds: Option<u64>,
+}
+
 pub async fn install_versioned(fetcher: &mut CamoufoxFetcher, replace: bool) -> Result<bool> {
+    install_versioned_with_progress(fetcher, replace, None, |_| {}).await
+}
+
+pub async fn install_versioned_with_progress<F>(
+    fetcher: &mut CamoufoxFetcher,
+    replace: bool,
+    cancel_flag: Option<&AtomicBool>,
+    mut on_progress: F,
+) -> Result<bool>
+where
+    F: FnMut(InstallProgress) + Send,
+{
     let repo_name = get_repo_name(&fetcher.github_repo);
     let sha8 = fetcher
         .selected_version
@@ -397,23 +441,56 @@ pub async fn install_versioned(fetcher: &mut CamoufoxFetcher, replace: bool) -> 
         fs::remove_dir_all(&install_path)?;
     }
 
-    let temp_dir = std::env::temp_dir().join(format!("camoufox-{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "camoufox-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     fs::create_dir_all(&temp_dir)?;
     let temp_zip = temp_dir.join("camoufox.zip");
 
     let res: Result<bool> = async {
         fs::create_dir_all(&install_path)?;
         let url = fetcher.url()?.to_owned();
-        let bytes = crate::pkgman::webdl(&url, Some(&format!("Downloading Camoufox v{verstr}")), true).await?;
-        fs::write(&temp_zip, &bytes)?;
+        println!("Downloading Camoufox v{verstr}: {url}");
+        let actual_sha = webdl_to_file(&url, &temp_zip, cancel_flag, |p| {
+            on_progress(InstallProgress {
+                stage: InstallStage::Downloading,
+                downloaded_bytes: p.downloaded_bytes,
+                total_bytes: p.total_bytes,
+                percentage: p.percentage,
+                speed_bytes_per_sec: p.speed_bytes_per_sec,
+                eta_seconds: p.eta_seconds,
+            });
+        })
+        .await?;
 
+        on_progress(InstallProgress {
+            stage: InstallStage::Verifying,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percentage: 100.0,
+            speed_bytes_per_sec: 0.0,
+            eta_seconds: None,
+        });
         let expected_sha = fetcher
             .selected_version
             .as_ref()
             .and_then(|s| s.sha256.as_deref())
             .or(fetcher.installed_sha256.as_deref());
-        verify_sha256(&bytes, expected_sha, &format!("Camoufox v{verstr}"))?;
+        verify_sha256_hex(&actual_sha, expected_sha, &format!("Camoufox v{verstr}"))?;
 
+        on_progress(InstallProgress {
+            stage: InstallStage::Extracting,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percentage: 100.0,
+            speed_bytes_per_sec: 0.0,
+            eta_seconds: None,
+        });
         println!("Extracting Camoufox: {}", install_path.display());
         unzip(&temp_zip, &install_path)?;
 
@@ -441,6 +518,14 @@ pub async fn install_versioned(fetcher: &mut CamoufoxFetcher, replace: bool) -> 
         set_active(&format!("browsers/{repo_name}/{version_folder}"));
         fs::write(compat_flag(), "")?;
         println!("\nCamoufox v{verstr} installed.\nPath: {}", install_path.display());
+        on_progress(InstallProgress {
+            stage: InstallStage::Completed,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percentage: 100.0,
+            speed_bytes_per_sec: 0.0,
+            eta_seconds: None,
+        });
         Ok(true)
     }
     .await;
