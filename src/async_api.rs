@@ -30,6 +30,24 @@ use crate::utils::{
 };
 use crate::warnings::LeakWarning;
 
+const STOCK_MEDIA_NO_OVERRIDE: &str = "no-override";
+
+/// Match Camoufox Python's `STOCK_MEDIA_DEFAULTS`: Playwright silently defaults
+/// context media emulation (e.g. `colorScheme: "light"`), whereas `"no-override"`
+/// lets Firefox answer from the host / identity prefs. Explicit caller choices
+/// remain untouched.
+fn apply_stock_media_defaults(ctx_opts: &mut BrowserContextOptions) {
+    if ctx_opts.color_scheme.is_none() {
+        ctx_opts.color_scheme = Some(STOCK_MEDIA_NO_OVERRIDE.to_owned());
+    }
+    if ctx_opts.reduced_motion.is_none() {
+        ctx_opts.reduced_motion = Some(STOCK_MEDIA_NO_OVERRIDE.to_owned());
+    }
+    if ctx_opts.forced_colors.is_none() {
+        ctx_opts.forced_colors = Some(STOCK_MEDIA_NO_OVERRIDE.to_owned());
+    }
+}
+
 pub type Headless = crate::utils::HeadlessMode;
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +129,7 @@ impl CamoufoxBrowser {
         if self.no_viewport_default {
             ctx_opts.no_viewport = Some(true);
         }
+        apply_stock_media_defaults(&mut ctx_opts);
         let ctx = browser.new_context_with_options(ctx_opts).await?;
         Ok(ctx.new_page().await?)
     }
@@ -286,6 +305,7 @@ pub async fn new_browser(mut options: CamoufoxOptions) -> Result<CamoufoxBrowser
             if let Some(ref p) = prepared.proxy {
                 ctx_opts.proxy = Some(p.to_playwright());
             }
+            apply_stock_media_defaults(&mut ctx_opts);
             let ctx = firefox
                 .launch_persistent_context_with_options(dir_str, ctx_opts)
                 .await?;
@@ -500,6 +520,7 @@ async fn new_context_with_identity(
         }
     }
 
+    apply_stock_media_defaults(&mut pw_ctx);
     let context = browser.new_context_with_options(pw_ctx).await?;
     context.add_init_script(&fp.init_script).await?;
     if let Some(auth) = proxy_auth {
@@ -512,4 +533,26 @@ async fn new_context_with_identity(
 pub fn config_from_prepared(opts: &PreparedLaunchOptions) -> Config {
     let blob = camou_config_blob(&opts.env);
     serde_json::from_str::<Map<String, Value>>(&blob).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stock_media_defaults_use_no_override_without_clobbering_caller() {
+        let mut defaults = BrowserContextOptions::default();
+        apply_stock_media_defaults(&mut defaults);
+        assert_eq!(defaults.color_scheme.as_deref(), Some("no-override"));
+        assert_eq!(defaults.reduced_motion.as_deref(), Some("no-override"));
+        assert_eq!(defaults.forced_colors.as_deref(), Some("no-override"));
+
+        let mut explicit = BrowserContextOptions::default();
+        explicit.color_scheme = Some("dark".into());
+        explicit.reduced_motion = Some("reduce".into());
+        apply_stock_media_defaults(&mut explicit);
+        assert_eq!(explicit.color_scheme.as_deref(), Some("dark"));
+        assert_eq!(explicit.reduced_motion.as_deref(), Some("reduce"));
+        assert_eq!(explicit.forced_colors.as_deref(), Some("no-override"));
+    }
 }
